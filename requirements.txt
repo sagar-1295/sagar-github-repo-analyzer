@@ -1,0 +1,5 @@
+streamlit
+litellm
+mcp
+requests
+python-dotenv
