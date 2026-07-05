@@ -11,8 +11,19 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 load_dotenv()
 
-MODEL = os.getenv("MODEL", "ollama/llama3.1")
-API_BASE = os.getenv("OLLAMA_API_BASE") or os.getenv("API_BASE") or "http://localhost:11434"
+# Intelligent model detection: Ollama locally, Groq in cloud
+API_BASE = os.getenv("OLLAMA_API_BASE") or os.getenv("API_BASE")
+
+# Determine which model to use
+if os.getenv("MODEL"):
+    # User explicitly set MODEL
+    MODEL = os.getenv("MODEL")
+elif API_BASE:
+    # Ollama is configured locally
+    MODEL = "ollama/llama3.1"
+else:
+    # Cloud environment - use Groq
+    MODEL = "groq/llama-3.1-8b-instant"
 
 TOOLS: List[Dict[str, Any]] = [
     {
@@ -182,6 +193,7 @@ def run_agent(user_question: str, owner: str, repo: str) -> str:
 
     tool_results: List[Dict[str, Any]] = []
     for tool_call in tool_calls:
+        tool_call_id = getattr(tool_call, "id", None)
         function = getattr(tool_call, "function", None)
         tool_name = None
         raw_arguments = None
@@ -197,22 +209,31 @@ def run_agent(user_question: str, owner: str, repo: str) -> str:
         try:
             result = asyncio.run(_call_mcp_tool(tool_name, arguments))
             normalized_result = _normalize_tool_result(result)
-            tool_results.append({"tool_name": tool_name, "result": normalized_result})
+            tool_results.append({
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "result": normalized_result
+            })
         except Exception as exc:  # noqa: BLE001
-            tool_results.append({"tool_name": tool_name, "result": f"Tool error: {exc}"})
+            tool_results.append({
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "result": f"Tool error: {exc}"
+            })
 
     follow_up_messages = [
         {"role": "user", "content": prompt},
         {"role": "assistant", "content": "I used the available tools to inspect the repository."},
     ]
     for item in tool_results:
-        follow_up_messages.append(
-            {
-                "role": "tool",
-                "name": item["tool_name"],
-                "content": _tool_result_to_text(item["result"]),
-            }
-        )
+        tool_msg: Dict[str, Any] = {
+            "role": "tool",
+            "name": item["tool_name"],
+            "content": _tool_result_to_text(item["result"]),
+        }
+        if item.get("tool_call_id"):
+            tool_msg["tool_call_id"] = item["tool_call_id"]
+        follow_up_messages.append(tool_msg)
 
     try:
         final_kwargs: Dict[str, Any] = {
